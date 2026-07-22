@@ -68,7 +68,8 @@ def _base_ydl_opts():
             "Accept-Language": "en-US,en;q=0.9",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
-        "extractor_args": {"youtube": {"player_client": ["web", "tv", "android", "mweb"]}},
+        # ✅ FIX 1: 'android' ক্লায়েন্ট রিমুভ করে 'ios' ও 'tv' দেওয়া হলো যেন সব রেজল্যুশন পাওয়া যায়
+        "extractor_args": {"youtube": {"player_client": ["ios", "tv", "web", "mweb"]}},
         "remote_components": "ejs:github",
         "retries": 10,
         "fragment_retries": 10,
@@ -83,8 +84,7 @@ def _base_ydl_opts():
 
 def get_available_qualities(url):
     ydl_opts = _base_ydl_opts()
-    # ✅ FIX 1: ইনফো এক্সট্র্যাক্ট করার সময় ক্র্যাশ এড়াতে রিলায়েবল ফরম্যাট সেট করা হলো
-    ydl_opts["format"] = "bestvideo+bestaudio/best/bestaudio"
+    # ✅ FIX 2: yt-dlp যেন স্বাধীনভাবে সব কোয়ালিটি স্ক্যান করতে পারে তাই ডিফল্ট format ফিল্টার রিমুভ করা হলো
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
     formats = info.get("formats", [])
@@ -119,7 +119,7 @@ def make_progress_hook(progress):
 def download_video(url, output_path, height=360, progress_hook=None):
     ydl_opts = _base_ydl_opts()
     ydl_opts.update({
-        # ✅ FIX 2: লিরিক্স বা অডিও ভিডিওর জন্য শেষে '/bestaudio' যোগ করা হয়েছে
+        # ✅ FIX 3: লিরিক্স বা অডিও ভিডিওর জন্য শেষে '/bestaudio' যোগ করা হয়েছে
         "format": f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best/bestaudio",
         "outtmpl": output_path,
         "merge_output_format": "mp4",
@@ -386,7 +386,7 @@ async def handle_link(message):
     SESSIONS[chat_id]["quality_map"] = quality_map
     SESSIONS[chat_id]["state"] = "QUALITY"
 
-    # ✅ FIX 3: লিমিট তুলে দেওয়া হয়েছে। ইউটিউব থেকে যতগুলো রেজল্যুশন পাওয়া যাবে, সবগুলোই বাটনে যুক্ত হবে।
+    # ✅ FIX 4: লিমিট তুলে দেওয়া হয়েছে। ইউটিউব থেকে যতগুলো রেজল্যুশন পাওয়া যাবে, সবগুলোই বাটনে যুক্ত হবে।
     kb = []
     for h in heights:
         size_text = fmt_size(quality_map.get(h))
