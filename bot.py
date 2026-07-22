@@ -1,29 +1,54 @@
 import os, math, logging, re, subprocess, shutil, asyncio, time
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ConversationHandler
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 import yt_dlp
 import imageio_ffmpeg
 
+# ─────────────────────────────────────────────
+#  Config
+# ─────────────────────────────────────────────
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
-TOKEN = os.environ.get("TOKEN")
-MAX_FILE_MB = 35
+
+# ✅ NEW: এখন MTProto (Pyrogram) ব্যবহার হচ্ছে ২GB পর্যন্ত আপলোডের জন্য।
+# API_ID / API_HASH যোগ করতে হবে https://my.telegram.org থেকে (নিজের বা যেকোনো
+# ভ্যালিড অ্যাকাউন্টের) এবং Railway এর Variables ট্যাবে বসাতে হবে।
+# এগুলো কোডে হার্ডকোড করা নেই — সম্পূর্ণ Railway env var দিয়ে নিয়ন্ত্রিত।
+API_ID = int(os.environ.get("API_ID", "0") or "0")
+API_HASH = os.environ.get("API_HASH", "")
+TOKEN = os.environ.get("TOKEN", "")
+
+if not API_ID or not API_HASH or not TOKEN:
+    raise RuntimeError(
+        "❌ TOKEN, API_ID এবং API_HASH — এই তিনটা Environment Variable Railway তে সেট করা আছে কিনা চেক করো!\n"
+        "API_ID/API_HASH পাবে: https://my.telegram.org -> API Development Tools"
+    )
+
 DOWNLOAD_DIR = "downloads"
 DEVELOPER = "BY : RH RATUL"
 ADMIN_USERNAME = "@Ratul0070"
 START_TIME = time.time()
-
-(WAITING_LINK, WAITING_QUALITY, WAITING_TRIM, WAITING_PROMO_CHOICE,
- WAITING_PROMO_FILE, WAITING_PROMO_POSITION, WAITING_PROMO_TIME) = range(7)
+PART_DURATION_SEC = 600  # ✅ NEW: সাইজ না, ১০ মিনিট (৬০০ সেকেন্ড) ধরে পার্ট হবে
 
 logging.basicConfig(level=logging.ERROR)
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+# chat_id -> সেশন ডেটা (state machine, যেহেতু Pyrogram-এ built-in ConversationHandler নেই)
+SESSIONS = {}
+
+app = Client(
+    "cid_bot_session",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=TOKEN,
+    in_memory=True,   # Railway এর ephemeral ফাইলসিস্টেমে সেশন ফাইল সেভ না করে মেমরিতে রাখা
+)
+
+
+# ─────────────────────────────────────────────
+#  yt-dlp helpers
+# ─────────────────────────────────────────────
 
 def _detect_js_runtime():
-    """
-    ✅ FIX: node/deno PATH-এ আছে কিনা চেক করে yt-dlp কে এক্সপ্লিসিটলি path দেওয়া হয়,
-    কারণ কখনো কখনো yt-dlp নিজে PATH থেকে runtime auto-detect করতে ব্যর্থ হয়।
-    """
     for name in ("deno", "node", "bun"):
         path = shutil.which(name)
         if path:
@@ -32,7 +57,6 @@ def _detect_js_runtime():
 
 
 def _base_ydl_opts():
-    """Common yt-dlp options shared between info-extraction and download."""
     js_runtimes = _detect_js_runtime()
     opts = {
         "quiet": True,
@@ -44,11 +68,7 @@ def _base_ydl_opts():
             "Accept-Language": "en-US,en;q=0.9",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["web", "tv", "android", "mweb"],
-            }
-        },
+        "extractor_args": {"youtube": {"player_client": ["web", "tv", "android", "mweb"]}},
         "remote_components": "ejs:github",
         "retries": 10,
         "fragment_retries": 10,
@@ -62,14 +82,9 @@ def _base_ydl_opts():
 
 
 def get_available_qualities(url):
-    """
-    ✅ NEW: ভিডিওর সব উপলব্ধ কোয়ালিটি (height) এবং আনুমানিক সাইজ বের করে।
-    রিটার্ন করে: (heights_sorted_desc, {height: approx_filesize_bytes}, title)
-    """
     ydl_opts = _base_ydl_opts()
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
-
     formats = info.get("formats", [])
     quality_map = {}
     for f in formats:
@@ -79,38 +94,27 @@ def get_available_qualities(url):
         size = f.get("filesize") or f.get("filesize_approx")
         if h not in quality_map or (size and size > (quality_map[h] or 0)):
             quality_map[h] = size
-
     heights = sorted(quality_map.keys(), reverse=True)
     return heights, quality_map, info.get("title", "Video")
 
 
 def make_progress_hook(progress):
-    """
-    ✅ NEW: yt-dlp progress hook — ডাউনলোডের লাইভ পার্সেন্টেজ ও স্পিড progress dict-এ লিখে রাখে।
-    এই dict একটা আলাদা asyncio টাস্ক পোল করে টেলিগ্রাম মেসেজ এডিট করে।
-    """
     def hook(d):
-        status = d.get("status")
-        if status == "downloading":
+        if d.get("status") == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             downloaded = d.get("downloaded_bytes", 0)
+            progress["downloaded"] = downloaded
+            progress["total"] = total
             if total:
                 progress["percent"] = int(downloaded / total * 100)
-            speed = d.get("speed")
-            if speed:
-                progress["speed_str"] = f"⚡ {speed / 1024 / 1024:.2f} MB/s"
-            eta = d.get("eta")
-            if eta is not None:
-                progress["eta_str"] = f"⏳ বাকি: {eta}s"
-        elif status == "finished":
+            progress["speed"] = d.get("speed") or 0
+            progress["eta"] = d.get("eta") or 0
+        elif d.get("status") == "finished":
             progress["percent"] = 100
     return hook
 
 
 def download_video(url, output_path, height=360, progress_hook=None):
-    """
-    yt-dlp দিয়ে ভিডিও ডাউনলোড করে। ইউজারের সিলেক্ট করা height অনুযায়ী format তৈরি হয়।
-    """
     ydl_opts = _base_ydl_opts()
     ydl_opts.update({
         "format": f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best",
@@ -119,7 +123,6 @@ def download_video(url, output_path, height=360, progress_hook=None):
         "ffmpeg_location": FFMPEG,
         "progress_hooks": [progress_hook] if progress_hook else [],
     })
-
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         fname = ydl.prepare_filename(info)
@@ -128,6 +131,10 @@ def download_video(url, output_path, height=360, progress_hook=None):
                 fname = fname[: -len(ext)] + ".mp4"
         return fname
 
+
+# ─────────────────────────────────────────────
+#  ffmpeg helpers
+# ─────────────────────────────────────────────
 
 def to_sec(t):
     t = t.strip()
@@ -206,18 +213,18 @@ def add_promo_to_part(part, promo, promo_pos, promo_time, out):
     return out
 
 
-def split_video(inp, max_mb=MAX_FILE_MB):
-    size_mb = os.path.getsize(inp) / (1024 * 1024)
-    if size_mb <= max_mb:
-        return [inp]
+def split_video(inp, part_seconds=PART_DURATION_SEC):
+    """✅ CHANGED: সাইজ না, ডিউরেশন (১০ মিনিট) ধরে ভাগ হবে।"""
     total = get_duration(inp)
-    n = math.ceil(size_mb / max_mb)
-    part_dur = total / n
+    if total <= part_seconds:
+        return [inp]
+    n = math.ceil(total / part_seconds)
     parts = []
     base = inp.replace('.mp4', '')
     for i in range(n):
         p = f"{base}_part{i + 1}.mp4"
-        subprocess.run([FFMPEG, '-i', inp, '-ss', str(i * part_dur), '-t', str(part_dur),
+        start = i * part_seconds
+        subprocess.run([FFMPEG, '-i', inp, '-ss', str(start), '-t', str(part_seconds),
                         '-c', 'copy', '-y', p], capture_output=True)
         if os.path.exists(p):
             parts.append(p)
@@ -233,6 +240,19 @@ def cleanup(*paths):
             pass
 
 
+# ─────────────────────────────────────────────
+#  Progress bar helpers (✅ NEW: animation + MB + speed + ETA)
+# ─────────────────────────────────────────────
+
+def make_bar(percent, length=18):
+    filled = int(length * percent / 100)
+    return "▓" * filled + "░" * (length - filled)
+
+
+def fmt_mb(b):
+    return f"{(b or 0) / 1024 / 1024:.1f}MB"
+
+
 def fmt_size(b):
     if not b:
         return ""
@@ -240,228 +260,290 @@ def fmt_size(b):
     return f" (~{mb:.0f}MB)"
 
 
+def fmt_time(sec):
+    sec = int(sec or 0)
+    m, s = divmod(sec, 60)
+    return f"{m:02d}:{s:02d}"
+
+
+async def download_progress_watcher(message, progress, name):
+    last = -1
+    while not progress.get("done"):
+        pct = progress.get("percent", 0)
+        if pct != last:
+            text = (
+                f"📥 ডাউনলোড হচ্ছে...\n"
+                f"👤 ইউজার: **{name}**\n\n"
+                f"[{make_bar(pct)}] {pct}%\n"
+                f"📦 {fmt_mb(progress.get('downloaded'))} / {fmt_mb(progress.get('total'))}\n"
+                f"⚡ স্পিড: {fmt_mb(progress.get('speed'))}/s\n"
+                f"⏳ বাকি সময়: {fmt_time(progress.get('eta'))}"
+            )
+            try:
+                await message.edit_text(text)
+            except Exception:
+                pass
+            last = pct
+        await asyncio.sleep(2)
+    try:
+        await message.edit_text(f"✅ ডাউনলোড সম্পন্ন!\n👤 **{name}**")
+    except Exception:
+        pass
+
+
+def make_upload_progress(message, name, part_i, total_parts):
+    state = {"last_pct": -1, "last_time": 0.0}
+
+    async def cb(current, total):
+        now = time.time()
+        pct = int(current * 100 / total) if total else 0
+        if pct != state["last_pct"] and (now - state["last_time"] >= 2 or pct == 100):
+            text = (
+                f"📤 Part {part_i}/{total_parts} আপলোড হচ্ছে...\n"
+                f"👤 ইউজার: **{name}**\n\n"
+                f"[{make_bar(pct)}] {pct}%\n"
+                f"📦 {fmt_mb(current)} / {fmt_mb(total)}"
+            )
+            try:
+                await message.edit_text(text)
+            except Exception:
+                pass
+            state["last_pct"] = pct
+            state["last_time"] = now
+    return cb
+
+
 # ─────────────────────────────────────────────
-#  Telegram Handlers
+#  Handlers
 # ─────────────────────────────────────────────
 
-async def start(update, context):
-    user = update.effective_user
-    name = user.first_name or (f"@{user.username}" if user.username else "Friend")
+@app.on_message(filters.command("start"))
+async def start_handler(client, message):
+    chat_id = message.chat.id
+    user = message.from_user
+    name = (user.first_name if user else None) or (f"@{user.username}" if user and user.username else "Friend")
+    SESSIONS[chat_id] = {"state": "LINK", "user_name": name}
+
     elapsed = int(time.time() - START_TIME)
     h, rem = divmod(elapsed, 3600)
     m, s = divmod(rem, 60)
     text = (
-        f"Hello👋{name} I am one and only Downloader Bot on Telegram."
+        f"Hello👋 **{name}** I am one and only Downloader Bot on Telegram."
         f"You can use me to Download Any Youtube Videos Past Video links to Telegram ⤵️\n\n"
         f"Here I support Direct Downlode Video And Many Part If you found any issue please "
         f"contact Support {ADMIN_USERNAME}\n\n"
         f"📤 Bot Uptime: hours:{h:02d} minutes:{m:02d} and seconds:{s:02d} ago"
     )
-    await update.message.reply_text(text)
-    return WAITING_LINK
+    await message.reply_text(text)
 
 
-async def receive_link(update, context):
-    url = update.message.text.strip()
+@app.on_message(filters.command("cancel"))
+async def cancel_handler(client, message):
+    SESSIONS.pop(message.chat.id, None)
+    await message.reply_text("❌ বাতিল!")
+
+
+@app.on_message(filters.text & filters.private & ~filters.command(["start", "cancel"]))
+async def text_router(client, message):
+    chat_id = message.chat.id
+    session = SESSIONS.get(chat_id)
+    state = session.get("state") if session else None
+
+    if state == "TRIM":
+        await handle_trim_text(message, session)
+    elif state == "PROMO_TIME":
+        await handle_promo_time_text(client, message, session)
+    else:
+        await handle_link(message)
+
+
+async def handle_link(message):
+    url = message.text.strip()
     if "youtube.com" not in url and "youtu.be" not in url:
-        await update.message.reply_text("❌ সঠিক YouTube লিংক দাও!")
-        return WAITING_LINK
+        await message.reply_text("❌ সঠিক YouTube লিংক দাও!")
+        return
 
-    context.user_data.update({"url": url, "chat_id": update.message.chat_id})
-    checking_msg = await update.message.reply_text("🔍 ভিডিওর কোয়ালিটি চেক করছি...")
+    chat_id = message.chat.id
+    user = message.from_user
+    name = (user.first_name if user else None) or (f"@{user.username}" if user and user.username else "Friend")
+    SESSIONS[chat_id] = {"state": "LINK", "url": url, "user_name": name}
 
+    checking_msg = await message.reply_text("🔍 ভিডিওর কোয়ালিটি চেক করছি...")
     loop = asyncio.get_running_loop()
     try:
         heights, quality_map, title = await loop.run_in_executor(None, get_available_qualities, url)
     except Exception as e:
-        await checking_msg.edit_text(
-            f"❌ লিংক থেকে তথ্য আনা যায়নি!\nকিছুক্ষণ পরে আবার চেষ্টা করো অথবা অন্য লিংক দাও।\n`{str(e)[:200]}`",
-            parse_mode="Markdown"
-        )
-        return WAITING_LINK
+        await checking_msg.edit_text(f"❌ লিংক থেকে তথ্য আনা যায়নি!\n`{str(e)[:200]}`")
+        return
 
     if not heights:
         heights = [360]
         quality_map = {360: None}
 
-    context.user_data["quality_map"] = quality_map
+    SESSIONS[chat_id]["quality_map"] = quality_map
+    SESSIONS[chat_id]["state"] = "QUALITY"
 
-    # সবচেয়ে বেশি ব্যবহৃত রেজোলিউশনগুলো, উপলব্ধগুলো থেকে সর্বোচ্চ ৬টা দেখানো হবে
     common = [2160, 1440, 1080, 720, 480, 360, 240, 144]
     show = [h for h in common if h in heights][:6]
     if not show:
         show = heights[:6]
 
     kb = [[InlineKeyboardButton(f"🎞️ {h}p{fmt_size(quality_map.get(h))}", callback_data=f"q_{h}")] for h in show]
-
     await checking_msg.edit_text(
-        f"🎬 *{title}*\n\nকোন কোয়ালিটিতে ডাউনলোড করতে চাও?",
-        parse_mode="Markdown",
+        f"🎬 **{title}**\n\nকোন কোয়ালিটিতে ডাউনলোড করতে চাও?",
         reply_markup=InlineKeyboardMarkup(kb)
     )
-    return WAITING_QUALITY
 
 
-async def quality_choice(update, context):
-    q = update.callback_query
-    await q.answer()
-    height = int(q.data.split("_")[1])
-    context.user_data["height"] = height
-
-    kb = [
-        [InlineKeyboardButton("✂️ হ্যাঁ Trim করব", callback_data="trim_yes")],
-        [InlineKeyboardButton("⏭️ না পুরো ভিডিও", callback_data="trim_no")]
-    ]
-    await q.edit_message_text(
-        f"✅ {height}p সিলেক্ট করা হয়েছে!\n\nTrim করতে চাও?",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-    return WAITING_TRIM
-
-
-async def trim_choice(update, context):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "trim_yes":
-        await q.edit_message_text("✂️ সময় দাও:\n`শুরু - শেষ`\nউদাহরণ: `1:30 - 5:45`",
-                                  parse_mode="Markdown")
-        return WAITING_TRIM
-    context.user_data["trim"] = None
-    return await ask_promo(q.message, context)
-
-
-async def receive_trim(update, context):
+async def handle_trim_text(message, session):
     try:
-        p = update.message.text.strip().split("-")
+        p = message.text.strip().split("-")
         s, e = p[0].strip(), p[1].strip()
         to_sec(s)
         to_sec(e)
-        context.user_data["trim"] = (s, e)
-    except:
-        await update.message.reply_text("❌ Format ঠিক নেই!\nউদাহরণ: `1:30 - 5:45`",
-                                        parse_mode="Markdown")
-        return WAITING_TRIM
-    return await ask_promo(update.message, context)
+        session["trim"] = (s, e)
+    except Exception:
+        await message.reply_text("❌ Format ঠিক নেই!\nউদাহরণ: `1:30 - 5:45`")
+        return
+    await ask_promo(message, session)
 
 
-async def ask_promo(message, context):
+async def handle_promo_time_text(client, message, session):
+    try:
+        t = message.text.strip()
+        to_sec(t)
+        session["promo_time"] = t
+    except Exception:
+        await message.reply_text("❌ সঠিক সময় দাও!\nউদাহরণ: `2:30`")
+        return
+    await message.reply_text("⏳ Processing শুরু হচ্ছে...")
+    await process_video(client, message, session)
+
+
+async def ask_promo(message, session):
+    session["state"] = "PROMO_CHOICE"
     kb = [
         [InlineKeyboardButton("📎 হ্যাঁ Promo যোগ করব", callback_data="promo_yes")],
         [InlineKeyboardButton("⏭️ না লাগবে না", callback_data="promo_no")]
     ]
-    await message.reply_text("📎 Promo ক্লিপ যোগ করবে?",
-                             reply_markup=InlineKeyboardMarkup(kb))
-    return WAITING_PROMO_CHOICE
+    await message.reply_text("📎 Promo ক্লিপ যোগ করবে?", reply_markup=InlineKeyboardMarkup(kb))
 
 
-async def promo_choice(update, context):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "promo_no":
-        context.user_data["promo_path"] = None
-        await q.edit_message_text("⏳ Processing শুরু হচ্ছে...")
-        await process_video(q.message, context)
-        return ConversationHandler.END
-    await q.edit_message_text("📎 Promo ক্লিপ পাঠাও!\n⚠️ *File হিসেবে পাঠাও!*",
-                              parse_mode="Markdown")
-    return WAITING_PROMO_FILE
+@app.on_callback_query()
+async def callback_router(client, cq):
+    chat_id = cq.message.chat.id
+    session = SESSIONS.get(chat_id)
+    data = cq.data
+    await cq.answer()
+
+    if not session:
+        await cq.edit_message_text("সেশনের মেয়াদ শেষ হয়ে গেছে! আবার /start দাও।")
+        return
+
+    if data.startswith("q_"):
+        await quality_choice(cq, session)
+    elif data.startswith("trim_"):
+        await trim_choice(cq, session)
+    elif data.startswith("promo_"):
+        await promo_choice(client, cq, session)
+    elif data.startswith("pos_"):
+        await promo_position(client, cq, session)
 
 
-async def receive_promo_file(update, context):
-    if not update.message.video and not update.message.document:
-        await update.message.reply_text("❌ Video file পাঠাও!")
-        return WAITING_PROMO_FILE
-    uid = str(update.message.chat_id)
+async def quality_choice(cq, session):
+    height = int(cq.data.split("_")[1])
+    session["height"] = height
+    session["state"] = "TRIM_ASK"
+    kb = [
+        [InlineKeyboardButton("✂️ হ্যাঁ Trim করব", callback_data="trim_yes")],
+        [InlineKeyboardButton("⏭️ না পুরো ভিডিও", callback_data="trim_no")]
+    ]
+    await cq.edit_message_text(f"✅ {height}p সিলেক্ট করা হয়েছে!\n\nTrim করতে চাও?", reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def trim_choice(cq, session):
+    if cq.data == "trim_yes":
+        session["state"] = "TRIM"
+        await cq.edit_message_text("✂️ সময় দাও:\n`শুরু - শেষ`\nউদাহরণ: `1:30 - 5:45`")
+        return
+    session["trim"] = None
+    await ask_promo(cq.message, session)
+
+
+async def promo_choice(client, cq, session):
+    if cq.data == "promo_no":
+        session["promo_path"] = None
+        await cq.edit_message_text("⏳ Processing শুরু হচ্ছে...")
+        await process_video(client, cq.message, session)
+        return
+    session["state"] = "PROMO_FILE"
+    await cq.edit_message_text("📎 Promo ক্লিপ পাঠাও!\n⚠️ **File হিসেবে পাঠাও!**")
+
+
+@app.on_message(filters.video | filters.document)
+async def promo_file_handler(client, message):
+    chat_id = message.chat.id
+    session = SESSIONS.get(chat_id)
+    if not session or session.get("state") != "PROMO_FILE":
+        return  # promo আশা করা হচ্ছে না, ইগনোর করো
+
+    uid = str(chat_id)
     promo_raw = f"{DOWNLOAD_DIR}/{uid}_promo_raw"
     promo_path = f"{DOWNLOAD_DIR}/{uid}_promo.mp4"
-    file = update.message.video or update.message.document
-    file_obj = await context.bot.get_file(file.file_id)
-    await file_obj.download_to_drive(promo_raw)
-    await update.message.reply_text("⚙️ Promo prepare হচ্ছে...")
-    prepare_promo(promo_raw, promo_path)
+
+    await message.download(file_name=promo_raw)
+    await message.reply_text("⚙️ Promo prepare হচ্ছে...")
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, prepare_promo, promo_raw, promo_path)
     cleanup(promo_raw)
-    context.user_data["promo_path"] = promo_path
+
+    session["promo_path"] = promo_path
+    session["state"] = "PROMO_POSITION"
     kb = [
         [InlineKeyboardButton("⏮️ শুরুতে", callback_data="pos_start")],
         [InlineKeyboardButton("⏭️ শেষে", callback_data="pos_end")],
         [InlineKeyboardButton("⏱️ নির্দিষ্ট সময়ে", callback_data="pos_custom")],
         [InlineKeyboardButton("🎯 মাঝখানে", callback_data="pos_middle")]
     ]
-    await update.message.reply_text("✅ Promo ready!\nকোথায় যোগ করব?",
-                                    reply_markup=InlineKeyboardMarkup(kb))
-    return WAITING_PROMO_POSITION
+    await message.reply_text("✅ Promo ready!\nকোথায় যোগ করব?", reply_markup=InlineKeyboardMarkup(kb))
 
 
-async def promo_position(update, context):
-    q = update.callback_query
-    await q.answer()
-    pos_map = {"pos_start": "start", "pos_end": "end",
-               "pos_middle": "middle", "pos_custom": "custom"}
-    context.user_data["promo_pos"] = pos_map[q.data]
-    if q.data == "pos_custom":
-        await q.edit_message_text("⏱️ কত সময়ে?\nউদাহরণ: `2:30`", parse_mode="Markdown")
-        return WAITING_PROMO_TIME
-    await q.edit_message_text("⏳ Processing শুরু হচ্ছে...")
-    await process_video(q.message, context)
-    return ConversationHandler.END
+async def promo_position(client, cq, session):
+    pos_map = {"pos_start": "start", "pos_end": "end", "pos_middle": "middle", "pos_custom": "custom"}
+    session["promo_pos"] = pos_map[cq.data]
+    if cq.data == "pos_custom":
+        session["state"] = "PROMO_TIME"
+        await cq.edit_message_text("⏱️ কত সময়ে?\nউদাহরণ: `2:30`")
+        return
+    await cq.edit_message_text("⏳ Processing শুরু হচ্ছে...")
+    await process_video(client, cq.message, session)
 
 
-async def receive_promo_time(update, context):
-    try:
-        t = update.message.text.strip()
-        to_sec(t)
-        context.user_data["promo_time"] = t
-    except:
-        await update.message.reply_text("❌ সঠিক সময় দাও!\nউদাহরণ: `2:30`",
-                                        parse_mode="Markdown")
-        return WAITING_PROMO_TIME
-    await update.message.reply_text("⏳ Processing শুরু হচ্ছে...")
-    await process_video(update.message, context)
-    return ConversationHandler.END
+# ─────────────────────────────────────────────
+#  Core processing
+# ─────────────────────────────────────────────
 
+async def process_video(client, message, session):
+    chat_id = message.chat.id
+    url = session["url"]
+    height = session.get("height", 360)
+    trim = session.get("trim")
+    promo_path = session.get("promo_path")
+    promo_pos = session.get("promo_pos", "middle")
+    promo_time = session.get("promo_time")
+    name = session.get("user_name", "User")
 
-async def progress_watcher(message, progress):
-    """
-    ✅ NEW: প্রতি ২ সেকেন্ডে progress dict চেক করে ডাউনলোড % লাইভ আপডেট করে।
-    """
-    last = -1
-    while not progress.get("done"):
-        pct = progress.get("percent", 0)
-        if pct != last:
-            speed = progress.get("speed_str", "")
-            eta = progress.get("eta_str", "")
-            extra = ("\n" + speed) if speed else ""
-            extra += ("\n" + eta) if eta else ""
-            try:
-                await message.edit_text(f"📥 ডাউনলোড হচ্ছে... {pct}%{extra}")
-            except Exception:
-                pass
-            last = pct
-        await asyncio.sleep(2)
-    try:
-        await message.edit_text("✅ ডাউনলোড সম্পন্ন! প্রসেসিং করছি...")
-    except Exception:
-        pass
-
-
-async def process_video(message, context):
-    url = context.user_data["url"]
-    height = context.user_data.get("height", 360)
-    trim = context.user_data.get("trim")
-    promo_path = context.user_data.get("promo_path")
-    promo_pos = context.user_data.get("promo_pos", "middle")
-    promo_time = context.user_data.get("promo_time")
-    chat_id = context.user_data["chat_id"]
     uid = str(chat_id)
     raw = f"{DOWNLOAD_DIR}/{uid}_raw.mp4"
     trimmed = f"{DOWNLOAD_DIR}/{uid}_trimmed.mp4"
+    loop = asyncio.get_running_loop()
 
     try:
-        progress_msg = await message.reply_text("📥 ডাউনলোড শুরু হচ্ছে... 0%")
-        progress = {"percent": 0, "done": False, "speed_str": "", "eta_str": ""}
-        watcher_task = asyncio.create_task(progress_watcher(progress_msg, progress))
+        progress_msg = await message.reply_text(f"📥 ডাউনলোড শুরু হচ্ছে...\n👤 ইউজার: **{name}**")
+        progress = {"percent": 0, "done": False, "downloaded": 0, "total": 0, "speed": 0, "eta": 0}
+        watcher_task = asyncio.create_task(download_progress_watcher(progress_msg, progress, name))
 
-        loop = asyncio.get_running_loop()
         hook = make_progress_hook(progress)
         try:
             current = await loop.run_in_executor(None, download_video, url, raw, height, hook)
@@ -471,86 +553,62 @@ async def process_video(message, context):
 
         if trim:
             await message.reply_text(f"✂️ Trimming: {trim[0]} → {trim[1]}")
-            trim_video(current, trim[0], trim[1], trimmed)
+            await loop.run_in_executor(None, trim_video, current, trim[0], trim[1], trimmed)
             current = trimmed
 
-        await message.reply_text("📦 প্রস্তুত করছি...")
-        parts = split_video(current)
-        total = len(parts)
+        await message.reply_text("📦 ১০ মিনিট করে ভাগ করছি...")
+        parts = await loop.run_in_executor(None, split_video, current)
+        total_parts = len(parts)
 
         for i, part in enumerate(parts, 1):
             send_path = part
             if promo_path and os.path.exists(promo_path):
-                await message.reply_text(f"📎 Part {i}/{total} এ Promo যোগ করছি...")
+                await message.reply_text(f"📎 Part {i}/{total_parts} এ Promo যোগ করছি...")
                 promo_out = part.replace('.mp4', '_promo.mp4')
-                add_promo_to_part(part, promo_path, promo_pos, promo_time, promo_out)
+                await loop.run_in_executor(None, add_promo_to_part, part, promo_path, promo_pos, promo_time, promo_out)
                 if os.path.exists(promo_out):
                     send_path = promo_out
 
-            await message.reply_text(f"📤 পাঠাচ্ছি Part {i}/{total}...")
-            with open(send_path, "rb") as f:
-                await context.bot.send_video(
-                    chat_id=chat_id,
-                    video=f,
-                    caption=f"🎬 Part {i}/{total}\n\n_{DEVELOPER}_",
-                    parse_mode="Markdown"
-                )
+            upload_msg = await message.reply_text(
+                f"📤 Part {i}/{total_parts} আপলোড হচ্ছে...\n👤 ইউজার: **{name}**\n\n[{make_bar(0)}] 0%"
+            )
+            upload_cb = make_upload_progress(upload_msg, name, i, total_parts)
+
+            await client.send_video(
+                chat_id=chat_id,
+                video=send_path,
+                caption=f"🎬 Part {i}/{total_parts}\n👤 **{name}**\n\n_{DEVELOPER}_",
+                progress=upload_cb,
+            )
+            try:
+                await upload_msg.delete()
+            except Exception:
+                pass
             if send_path != part:
                 cleanup(send_path)
 
-        await message.reply_text(
-            f"✅ Done! {total}টা Part!\n\n_{DEVELOPER}_",
-            parse_mode="Markdown"
-        )
+        await message.reply_text(f"✅ Done! {total_parts}টা Part পাঠানো হয়েছে!\n👤 **{name}**\n\n_{DEVELOPER}_")
 
     except Exception as e:
         err = str(e)
         if "Requested format is not available" in err:
             await message.reply_text(
                 "❌ Format Error!\nভিডিওটার format পাওয়া যাচ্ছে না।\n"
-                "কিছুক্ষণ পরে আবার চেষ্টা করো অথবা অন্য লিংক দাও।",
-                parse_mode="Markdown"
+                "কিছুক্ষণ পরে আবার চেষ্টা করো অথবা অন্য লিংক দাও।"
             )
         elif "Video unavailable" in err:
             await message.reply_text("❌ ভিডিওটা available নেই বা private!")
         else:
-            await message.reply_text(f"❌ Error:\n`{err[:500]}`", parse_mode="Markdown")
+            await message.reply_text(f"❌ Error:\n`{err[:500]}`")
 
     finally:
         cleanup(raw, trimmed, promo_path or "")
-
-
-async def cancel(update, context):
-    await update.message.reply_text("❌ বাতিল!")
-    return ConversationHandler.END
+        SESSIONS.pop(chat_id, None)
 
 
 # ─────────────────────────────────────────────
-#  App Setup
+#  Run
 # ─────────────────────────────────────────────
 
-app = Application.builder().token(TOKEN).build()
-
-conv = ConversationHandler(
-    entry_points=[
-        CommandHandler("start", start),
-        MessageHandler(filters.TEXT & ~filters.COMMAND, receive_link)
-    ],
-    states={
-        WAITING_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_link)],
-        WAITING_QUALITY: [CallbackQueryHandler(quality_choice, pattern="^q_")],
-        WAITING_TRIM: [
-            CallbackQueryHandler(trim_choice, pattern="^trim_"),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_trim)
-        ],
-        WAITING_PROMO_CHOICE: [CallbackQueryHandler(promo_choice, pattern="^promo_")],
-        WAITING_PROMO_FILE: [MessageHandler(filters.VIDEO | filters.Document.VIDEO, receive_promo_file)],
-        WAITING_PROMO_POSITION: [CallbackQueryHandler(promo_position, pattern="^pos_")],
-        WAITING_PROMO_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_promo_time)],
-    },
-    fallbacks=[CommandHandler("cancel", cancel)],
-)
-
-app.add_handler(conv)
-print("✅ Bot চালু! BY : RH RATUL")
-app.run_polling()
+print("✅ Bot চালু! BY : RH RATUL (Pyrogram / MTProto mode)")
+app.run()
