@@ -79,12 +79,15 @@ def _base_ydl_opts():
 
 def get_available_qualities(url):
     ydl_opts = _base_ydl_opts()
-    # ✅ FIX: ইনফো স্ক্যান করার সময় বট যেন ক্র্যাশ না করে, তাই একটি টলারেন্ট ফরম্যাট দেওয়া হলো। 
-    # এতে কোনো রেজল্যুশন হাইড হবে না, সবগুলোই বাটনে শো করবে।
-    ydl_opts["format"] = "bestvideo+bestaudio/best/bestaudio"
+    # ✅ FINAL FIX: ইনফো স্ক্যান করার সময় ফরম্যাট না পেলে যেন কোনোভাবেই ক্র্যাশ না করে
+    ydl_opts["ignore_no_formats_error"] = True
     
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
+        
+    if not info:
+        return [], {}, "Video"
+        
     formats = info.get("formats", [])
     quality_map = {}
     for f in formats:
@@ -591,7 +594,7 @@ async def process_video(client, message, session):
         err = str(e)
         if "Requested format is not available" in err:
             await message.reply_text(
-                "❌ Format Error!\nভিডিওটার format পাওয়া যাচ্ছে না।\n"
+                "❌ Format Error!\nভিডিওটার format পাওয়া যাচ্ছে না। এটি সম্ভবত প্রিমিয়াম বা হাইলি-প্রটেক্টেড ভিডিও।\n"
                 "কিছুক্ষণ পরে আবার চেষ্টা করো অথবা অন্য লিংক দাও।"
             )
         elif "Video unavailable" in err:
