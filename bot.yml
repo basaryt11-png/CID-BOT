@@ -1,0 +1,22 @@
+name: Run Telegram Bot
+on:
+  workflow_dispatch:
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install
+        run: pip install -r requirements.txt
+      - name: Create cookies
+        env:
+          COOKIES: ${{ secrets.COOKIES }}
+        run: printf '%s' "$COOKIES" > cookies.txt
+      - name: Run
+        run: python bot.py
+        env:
+          TOKEN: ${{ secrets.TOKEN }}
