@@ -79,7 +79,10 @@ def _base_ydl_opts():
 
 def get_available_qualities(url):
     ydl_opts = _base_ydl_opts()
-    # ✅ FIX 2: yt-dlp যেন স্বাধীনভাবে সব কোয়ালিটি স্ক্যান করতে পারে তাই ডিফল্ট format ফিল্টার রিমুভ করা হলো
+    # ✅ FIX: ইনফো স্ক্যান করার সময় বট যেন ক্র্যাশ না করে, তাই একটি টলারেন্ট ফরম্যাট দেওয়া হলো। 
+    # এতে কোনো রেজল্যুশন হাইড হবে না, সবগুলোই বাটনে শো করবে।
+    ydl_opts["format"] = "bestvideo+bestaudio/best/bestaudio"
+    
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
     formats = info.get("formats", [])
@@ -114,7 +117,6 @@ def make_progress_hook(progress):
 def download_video(url, output_path, height=360, progress_hook=None):
     ydl_opts = _base_ydl_opts()
     ydl_opts.update({
-        # ✅ FIX 3: লিরিক্স বা অডিও ভিডিওর জন্য শেষে '/bestaudio' যোগ করা হয়েছে
         "format": f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best/bestaudio",
         "outtmpl": output_path,
         "merge_output_format": "mp4",
@@ -212,7 +214,6 @@ def add_promo_to_part(part, promo, promo_pos, promo_time, out):
 
 
 def split_video(inp, part_seconds=PART_DURATION_SEC):
-    """✅ CHANGED: সাইজ না, ডিউরেশন (১০ মিনিট) ধরে ভাগ হবে।"""
     total = get_duration(inp)
     if total <= part_seconds:
         return [inp]
@@ -381,7 +382,6 @@ async def handle_link(message):
     SESSIONS[chat_id]["quality_map"] = quality_map
     SESSIONS[chat_id]["state"] = "QUALITY"
 
-    # ✅ FIX 4: লিমিট তুলে দেওয়া হয়েছে। ইউটিউব থেকে যতগুলো রেজল্যুশন পাওয়া যাবে, সবগুলোই বাটনে যুক্ত হবে।
     kb = []
     for h in heights:
         size_text = fmt_size(quality_map.get(h))
