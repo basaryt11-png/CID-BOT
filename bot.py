@@ -1,4 +1,4 @@
-import os, math, logging, re, subprocess, shutil
+import os, math, logging, re, subprocess, shutil, asyncio, time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ConversationHandler
 import yt_dlp
@@ -9,9 +9,11 @@ TOKEN = os.environ.get("TOKEN")
 MAX_FILE_MB = 35
 DOWNLOAD_DIR = "downloads"
 DEVELOPER = "BY : RH RATUL"
+ADMIN_USERNAME = "@Ratul0070"
+START_TIME = time.time()
 
-(WAITING_LINK, WAITING_TRIM, WAITING_PROMO_CHOICE,
- WAITING_PROMO_FILE, WAITING_PROMO_POSITION, WAITING_PROMO_TIME) = range(6)
+(WAITING_LINK, WAITING_QUALITY, WAITING_TRIM, WAITING_PROMO_CHOICE,
+ WAITING_PROMO_FILE, WAITING_PROMO_POSITION, WAITING_PROMO_TIME) = range(7)
 
 logging.basicConfig(level=logging.ERROR)
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -29,20 +31,10 @@ def _detect_js_runtime():
     return None
 
 
-def download_video(url, output_path):
-    """
-    yt-dlp দিয়ে ভিডিও ডাউনলোড করে।
-    Format error এড়াতে fallback chain + EJS (n-challenge) solver ব্যবহার করা হয়েছে।
-    """
+def _base_ydl_opts():
+    """Common yt-dlp options shared between info-extraction and download."""
     js_runtimes = _detect_js_runtime()
-
-    ydl_opts = {
-        # ✅ FIX: hard [ext=mp4]/[ext=m4a] filter সরানো হলো, এটা মাঝেমধ্যে
-        # ভ্যালিড format কেও reject করে ফেলছিল
-        "format": "bestvideo[height<=360]+bestaudio/best[height<=360]/best",
-        "outtmpl": output_path,
-        "merge_output_format": "mp4",
-        "ffmpeg_location": FFMPEG,
+    opts = {
         "quiet": True,
         "no_warnings": True,
         "geo_bypass": True,
@@ -54,29 +46,83 @@ def download_video(url, output_path):
         },
         "extractor_args": {
             "youtube": {
-                # ✅ FIX: কুকি থাকলে web client সবচেয়ে নির্ভরযোগ্য, বাকিগুলো fallback
                 "player_client": ["web", "tv", "android", "mweb"],
             }
         },
-        # ✅ FIX: n-challenge (nsig) সলভ করার জন্য EJS remote solver enable করা হলো
-        # এটা ছাড়া node/deno থাকলেও শুধু storyboard format পাওয়া যায়
         "remote_components": "ejs:github",
         "retries": 10,
         "fragment_retries": 10,
         "socket_timeout": 30,
     }
-
     if js_runtimes:
-        ydl_opts["js_runtimes"] = js_runtimes
-
+        opts["js_runtimes"] = js_runtimes
     if os.path.exists("cookies.txt"):
-        ydl_opts["cookiefile"] = "cookies.txt"
+        opts["cookiefile"] = "cookies.txt"
+    return opts
+
+
+def get_available_qualities(url):
+    """
+    ✅ NEW: ভিডিওর সব উপলব্ধ কোয়ালিটি (height) এবং আনুমানিক সাইজ বের করে।
+    রিটার্ন করে: (heights_sorted_desc, {height: approx_filesize_bytes}, title)
+    """
+    ydl_opts = _base_ydl_opts()
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    formats = info.get("formats", [])
+    quality_map = {}
+    for f in formats:
+        h = f.get("height")
+        if not h or f.get("vcodec") in (None, "none"):
+            continue
+        size = f.get("filesize") or f.get("filesize_approx")
+        if h not in quality_map or (size and size > (quality_map[h] or 0)):
+            quality_map[h] = size
+
+    heights = sorted(quality_map.keys(), reverse=True)
+    return heights, quality_map, info.get("title", "Video")
+
+
+def make_progress_hook(progress):
+    """
+    ✅ NEW: yt-dlp progress hook — ডাউনলোডের লাইভ পার্সেন্টেজ ও স্পিড progress dict-এ লিখে রাখে।
+    এই dict একটা আলাদা asyncio টাস্ক পোল করে টেলিগ্রাম মেসেজ এডিট করে।
+    """
+    def hook(d):
+        status = d.get("status")
+        if status == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            downloaded = d.get("downloaded_bytes", 0)
+            if total:
+                progress["percent"] = int(downloaded / total * 100)
+            speed = d.get("speed")
+            if speed:
+                progress["speed_str"] = f"⚡ {speed / 1024 / 1024:.2f} MB/s"
+            eta = d.get("eta")
+            if eta is not None:
+                progress["eta_str"] = f"⏳ বাকি: {eta}s"
+        elif status == "finished":
+            progress["percent"] = 100
+    return hook
+
+
+def download_video(url, output_path, height=360, progress_hook=None):
+    """
+    yt-dlp দিয়ে ভিডিও ডাউনলোড করে। ইউজারের সিলেক্ট করা height অনুযায়ী format তৈরি হয়।
+    """
+    ydl_opts = _base_ydl_opts()
+    ydl_opts.update({
+        "format": f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best",
+        "outtmpl": output_path,
+        "merge_output_format": "mp4",
+        "ffmpeg_location": FFMPEG,
+        "progress_hooks": [progress_hook] if progress_hook else [],
+    })
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         fname = ydl.prepare_filename(info)
-        # ✅ FIX: শুধু extension এর শেষে match করে replace করা হচ্ছে,
-        # আগে path-এর মাঝে "webm"/"mkv" শব্দ থাকলেও ভুল replace হতো
         for ext in [".webm", ".mkv"]:
             if fname.endswith(ext):
                 fname = fname[: -len(ext)] + ".mp4"
@@ -187,17 +233,31 @@ def cleanup(*paths):
             pass
 
 
+def fmt_size(b):
+    if not b:
+        return ""
+    mb = b / 1024 / 1024
+    return f" (~{mb:.0f}MB)"
+
+
 # ─────────────────────────────────────────────
 #  Telegram Handlers
 # ─────────────────────────────────────────────
 
 async def start(update, context):
-    await update.message.reply_text(
-        "🎬 *Video Downloader Bot*\n\nYouTube লিংক পাঠাও!\n\n"
-        "✅ Best Quality\n✂️ Cut\n📎 Promo\n📦 Auto Split\n\n"
-        f"_{DEVELOPER}_",
-        parse_mode="Markdown"
+    user = update.effective_user
+    name = user.first_name or (f"@{user.username}" if user.username else "Friend")
+    elapsed = int(time.time() - START_TIME)
+    h, rem = divmod(elapsed, 3600)
+    m, s = divmod(rem, 60)
+    text = (
+        f"Hello👋{name} I am one and only Downloader Bot on Telegram."
+        f"You can use me to Download Any Youtube Videos Past Video links to Telegram ⤵️\n\n"
+        f"Here I support Direct Downlode Video And Many Part If you found any issue please "
+        f"contact Support {ADMIN_USERNAME}\n\n"
+        f"📤 Bot Uptime: hours:{h:02d} minutes:{m:02d} and seconds:{s:02d} ago"
     )
+    await update.message.reply_text(text)
     return WAITING_LINK
 
 
@@ -206,13 +266,56 @@ async def receive_link(update, context):
     if "youtube.com" not in url and "youtu.be" not in url:
         await update.message.reply_text("❌ সঠিক YouTube লিংক দাও!")
         return WAITING_LINK
+
     context.user_data.update({"url": url, "chat_id": update.message.chat_id})
+    checking_msg = await update.message.reply_text("🔍 ভিডিওর কোয়ালিটি চেক করছি...")
+
+    loop = asyncio.get_running_loop()
+    try:
+        heights, quality_map, title = await loop.run_in_executor(None, get_available_qualities, url)
+    except Exception as e:
+        await checking_msg.edit_text(
+            f"❌ লিংক থেকে তথ্য আনা যায়নি!\nকিছুক্ষণ পরে আবার চেষ্টা করো অথবা অন্য লিংক দাও।\n`{str(e)[:200]}`",
+            parse_mode="Markdown"
+        )
+        return WAITING_LINK
+
+    if not heights:
+        heights = [360]
+        quality_map = {360: None}
+
+    context.user_data["quality_map"] = quality_map
+
+    # সবচেয়ে বেশি ব্যবহৃত রেজোলিউশনগুলো, উপলব্ধগুলো থেকে সর্বোচ্চ ৬টা দেখানো হবে
+    common = [2160, 1440, 1080, 720, 480, 360, 240, 144]
+    show = [h for h in common if h in heights][:6]
+    if not show:
+        show = heights[:6]
+
+    kb = [[InlineKeyboardButton(f"🎞️ {h}p{fmt_size(quality_map.get(h))}", callback_data=f"q_{h}")] for h in show]
+
+    await checking_msg.edit_text(
+        f"🎬 *{title}*\n\nকোন কোয়ালিটিতে ডাউনলোড করতে চাও?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+    return WAITING_QUALITY
+
+
+async def quality_choice(update, context):
+    q = update.callback_query
+    await q.answer()
+    height = int(q.data.split("_")[1])
+    context.user_data["height"] = height
+
     kb = [
         [InlineKeyboardButton("✂️ হ্যাঁ Trim করব", callback_data="trim_yes")],
         [InlineKeyboardButton("⏭️ না পুরো ভিডিও", callback_data="trim_no")]
     ]
-    await update.message.reply_text("লিংক পেয়েছি!\nTrim করতে চাও?",
-                                    reply_markup=InlineKeyboardMarkup(kb))
+    await q.edit_message_text(
+        f"✅ {height}p সিলেক্ট করা হয়েছে!\n\nTrim করতে চাও?",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
     return WAITING_TRIM
 
 
@@ -317,8 +420,33 @@ async def receive_promo_time(update, context):
     return ConversationHandler.END
 
 
+async def progress_watcher(message, progress):
+    """
+    ✅ NEW: প্রতি ২ সেকেন্ডে progress dict চেক করে ডাউনলোড % লাইভ আপডেট করে।
+    """
+    last = -1
+    while not progress.get("done"):
+        pct = progress.get("percent", 0)
+        if pct != last:
+            speed = progress.get("speed_str", "")
+            eta = progress.get("eta_str", "")
+            extra = ("\n" + speed) if speed else ""
+            extra += ("\n" + eta) if eta else ""
+            try:
+                await message.edit_text(f"📥 ডাউনলোড হচ্ছে... {pct}%{extra}")
+            except Exception:
+                pass
+            last = pct
+        await asyncio.sleep(2)
+    try:
+        await message.edit_text("✅ ডাউনলোড সম্পন্ন! প্রসেসিং করছি...")
+    except Exception:
+        pass
+
+
 async def process_video(message, context):
     url = context.user_data["url"]
+    height = context.user_data.get("height", 360)
     trim = context.user_data.get("trim")
     promo_path = context.user_data.get("promo_path")
     promo_pos = context.user_data.get("promo_pos", "middle")
@@ -329,8 +457,17 @@ async def process_video(message, context):
     trimmed = f"{DOWNLOAD_DIR}/{uid}_trimmed.mp4"
 
     try:
-        await message.reply_text("📥 ডাউনলোড হচ্ছে...")
-        current = download_video(url, raw)
+        progress_msg = await message.reply_text("📥 ডাউনলোড শুরু হচ্ছে... 0%")
+        progress = {"percent": 0, "done": False, "speed_str": "", "eta_str": ""}
+        watcher_task = asyncio.create_task(progress_watcher(progress_msg, progress))
+
+        loop = asyncio.get_running_loop()
+        hook = make_progress_hook(progress)
+        try:
+            current = await loop.run_in_executor(None, download_video, url, raw, height, hook)
+        finally:
+            progress["done"] = True
+            await watcher_task
 
         if trim:
             await message.reply_text(f"✂️ Trimming: {trim[0]} → {trim[1]}")
@@ -367,7 +504,6 @@ async def process_video(message, context):
         )
 
     except Exception as e:
-        # ✅ error message আরও helpful করা হয়েছে
         err = str(e)
         if "Requested format is not available" in err:
             await message.reply_text(
@@ -378,7 +514,7 @@ async def process_video(message, context):
         elif "Video unavailable" in err:
             await message.reply_text("❌ ভিডিওটা available নেই বা private!")
         else:
-            await message.reply_text(f"❌ Error:\n`{err}`", parse_mode="Markdown")
+            await message.reply_text(f"❌ Error:\n`{err[:500]}`", parse_mode="Markdown")
 
     finally:
         cleanup(raw, trimmed, promo_path or "")
@@ -402,6 +538,7 @@ conv = ConversationHandler(
     ],
     states={
         WAITING_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_link)],
+        WAITING_QUALITY: [CallbackQueryHandler(quality_choice, pattern="^q_")],
         WAITING_TRIM: [
             CallbackQueryHandler(trim_choice, pattern="^trim_"),
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_trim)
