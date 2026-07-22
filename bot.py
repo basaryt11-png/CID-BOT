@@ -63,22 +63,17 @@ def _base_ydl_opts():
         "no_warnings": True,
         "geo_bypass": True,
         "geo_bypass_country": "US",
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-        # ✅ FIX 1: 'android' ক্লায়েন্ট রিমুভ করে 'ios' ও 'tv' দেওয়া হলো যেন সব রেজল্যুশন পাওয়া যায়
-        "extractor_args": {"youtube": {"player_client": ["ios", "tv", "web", "mweb"]}},
-        "remote_components": "ejs:github",
         "retries": 10,
         "fragment_retries": 10,
         "socket_timeout": 30,
     }
     if js_runtimes:
         opts["js_runtimes"] = js_runtimes
+    
+    # কুকিজ ফাইল থাকলে সেটা ব্যবহার করবে
     if os.path.exists("cookies.txt"):
         opts["cookiefile"] = "cookies.txt"
+        
     return opts
 
 
