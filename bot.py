@@ -40,7 +40,7 @@ app = Client(
 
 
 # ─────────────────────────────────────────────
-#  yt-dlp helpers (Stable Bypass with Cookies)
+#  yt-dlp helpers
 # ─────────────────────────────────────────────
 
 def _detect_js_runtime():
@@ -68,7 +68,6 @@ def _base_ydl_opts():
         "fragment_retries": 15,
         "socket_timeout": 30,
         "ignore_no_formats_error": True,
-        # কুকিজ যেন বারবার এক্সপায়ার না হয় তার জন্য একটি ফেক ইউজার-এজেন্ট
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         }
@@ -76,9 +75,13 @@ def _base_ydl_opts():
     if js_runtimes:
         opts["js_runtimes"] = js_runtimes
     
-    # ✅ ম্যাজিক ট্রিক: এখানে সে আপনার কুকিজ ফাইলটি পড়বে
-    if os.path.exists("cookies.txt"):
-        opts["cookiefile"] = "cookies.txt"
+    # কুকিজ ফাইলের লগ চেকার
+    cookie_path = "cookies.txt"
+    if os.path.exists(cookie_path):
+        print(f"✅ SUCCESS: Cookies file found at {os.path.abspath(cookie_path)}")
+        opts["cookiefile"] = cookie_path
+    else:
+        print("❌ WARNING: cookies.txt file NOT FOUND in the directory! YouTube might block the bot.")
         
     return opts
 
@@ -88,7 +91,9 @@ def get_available_qualities(url):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
-        except Exception:
+        except Exception as e:
+            # 🚨 আসল এরর প্রিন্ট করার জন্য লগিং যোগ করা হলো
+            print(f"\n🚨 [ERROR] yt-dlp extract_info failed: {str(e)}\n")
             return [], {}, "Video"
             
     if not info:
