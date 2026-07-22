@@ -9,10 +9,6 @@ import imageio_ffmpeg
 # ─────────────────────────────────────────────
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
-# ✅ NEW: এখন MTProto (Pyrogram) ব্যবহার হচ্ছে ২GB পর্যন্ত আপলোডের জন্য।
-# API_ID / API_HASH যোগ করতে হবে https://my.telegram.org থেকে (নিজের বা যেকোনো
-# ভ্যালিড অ্যাকাউন্টের) এবং Railway এর Variables ট্যাবে বসাতে হবে।
-# এগুলো কোডে হার্ডকোড করা নেই — সম্পূর্ণ Railway env var দিয়ে নিয়ন্ত্রিত।
 API_ID = int(os.environ.get("API_ID", "0") or "0")
 API_HASH = os.environ.get("API_HASH", "")
 TOKEN = os.environ.get("TOKEN", "")
@@ -27,12 +23,11 @@ DOWNLOAD_DIR = "downloads"
 DEVELOPER = "BY : RH RATUL"
 ADMIN_USERNAME = "@Ratul0070"
 START_TIME = time.time()
-PART_DURATION_SEC = 600  # ✅ NEW: সাইজ না, ১০ মিনিট (৬০০ সেকেন্ড) ধরে পার্ট হবে
+PART_DURATION_SEC = 600  
 
 logging.basicConfig(level=logging.ERROR)
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# chat_id -> সেশন ডেটা (state machine, যেহেতু Pyrogram-এ built-in ConversationHandler নেই)
 SESSIONS = {}
 
 app = Client(
@@ -40,12 +35,12 @@ app = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=TOKEN,
-    in_memory=True,   # Railway এর ephemeral ফাইলসিস্টেমে সেশন ফাইল সেভ না করে মেমরিতে রাখা
+    in_memory=True,   
 )
 
 
 # ─────────────────────────────────────────────
-#  yt-dlp helpers
+#  yt-dlp helpers (Stable Bypass with Cookies)
 # ─────────────────────────────────────────────
 
 def _detect_js_runtime():
@@ -63,14 +58,25 @@ def _base_ydl_opts():
         "no_warnings": True,
         "geo_bypass": True,
         "geo_bypass_country": "US",
-        "retries": 10,
-        "fragment_retries": 10,
+        "nocheckcertificate": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["tv", "ios", "mweb", "web"]
+            }
+        },
+        "retries": 15,
+        "fragment_retries": 15,
         "socket_timeout": 30,
+        "ignore_no_formats_error": True,
+        # কুকিজ যেন বারবার এক্সপায়ার না হয় তার জন্য একটি ফেক ইউজার-এজেন্ট
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        }
     }
     if js_runtimes:
         opts["js_runtimes"] = js_runtimes
     
-    # কুকিজ ফাইল থাকলে সেটা ব্যবহার করবে
+    # ✅ ম্যাজিক ট্রিক: এখানে সে আপনার কুকিজ ফাইলটি পড়বে
     if os.path.exists("cookies.txt"):
         opts["cookiefile"] = "cookies.txt"
         
@@ -79,12 +85,12 @@ def _base_ydl_opts():
 
 def get_available_qualities(url):
     ydl_opts = _base_ydl_opts()
-    # ✅ FINAL FIX: ইনফো স্ক্যান করার সময় ফরম্যাট না পেলে যেন কোনোভাবেই ক্র্যাশ না করে
-    ydl_opts["ignore_no_formats_error"] = True
-    
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        
+        try:
+            info = ydl.extract_info(url, download=False)
+        except Exception:
+            return [], {}, "Video"
+            
     if not info:
         return [], {}, "Video"
         
@@ -379,8 +385,12 @@ async def handle_link(message):
         return
 
     if not heights:
-        heights = [360]
-        quality_map = {360: None}
+        await checking_msg.edit_text(
+            "❌ **ইউটিউব আপনার বটকে ব্লক করেছে বা ভিডিওটি প্রটেক্টেড!**\n\n"
+            "ভিডিওর কোনো কোয়ালিটি বা ফরম্যাট পাওয়া যায়নি।\n\n"
+            "💡 **সমাধান:** একটি নতুন/ফ্রেশ `cookies.txt` ফাইল বটের ফোল্ডারে আপলোড করে রিস্টার্ট দিন।"
+        )
+        return
 
     SESSIONS[chat_id]["quality_map"] = quality_map
     SESSIONS[chat_id]["state"] = "QUALITY"
@@ -486,7 +496,7 @@ async def promo_file_handler(client, message):
     chat_id = message.chat.id
     session = SESSIONS.get(chat_id)
     if not session or session.get("state") != "PROMO_FILE":
-        return  # promo আশা করা হচ্ছে না, ইগনোর করো
+        return  
 
     uid = str(chat_id)
     promo_raw = f"{DOWNLOAD_DIR}/{uid}_promo_raw"
@@ -594,7 +604,7 @@ async def process_video(client, message, session):
         err = str(e)
         if "Requested format is not available" in err:
             await message.reply_text(
-                "❌ Format Error!\nভিডিওটার format পাওয়া যাচ্ছে না। এটি সম্ভবত প্রিমিয়াম বা হাইলি-প্রটেক্টেড ভিডিও।\n"
+                "❌ Format Error!\nভিডিওটার format পাওয়া যাচ্ছে না। এটি সম্ভবত প্রিমিয়াম বা হাইলি-প্রটেক্টেড ভিডিও।\n"
                 "কিছুক্ষণ পরে আবার চেষ্টা করো অথবা অন্য লিংক দাও।"
             )
         elif "Video unavailable" in err:
