@@ -40,7 +40,7 @@ app = Client(
 
 
 # ─────────────────────────────────────────────
-#  yt-dlp helpers
+#  yt-dlp helpers (Stable Bypass with Cookies)
 # ─────────────────────────────────────────────
 
 def _detect_js_runtime():
@@ -53,6 +53,7 @@ def _detect_js_runtime():
 
 def _base_ydl_opts():
     js_runtimes = _detect_js_runtime()
+    print(f"[DEBUG] JS runtime detected: {js_runtimes}")
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -61,9 +62,12 @@ def _base_ydl_opts():
         "nocheckcertificate": True,
         "extractor_args": {
             "youtube": {
-                "player_client": ["tv", "ios", "mweb", "web"]
+                # ✅ FIX: android আবার যোগ করা হলো (ios একাই প্রায়ই "sign in required" দেয়)
+                "player_client": ["android", "tv", "web", "mweb"]
             }
         },
+        # ✅ FIX: remote EJS solver আবার চালু, nsig (n-challenge) সমাধানের জন্য দরকার
+        "remote_components": "ejs:github",
         "retries": 15,
         "fragment_retries": 15,
         "socket_timeout": 30,
@@ -74,15 +78,13 @@ def _base_ydl_opts():
     }
     if js_runtimes:
         opts["js_runtimes"] = js_runtimes
-    
-    # কুকিজ ফাইলের লগ চেকার
-    cookie_path = "cookies.txt"
-    if os.path.exists(cookie_path):
-        print(f"✅ SUCCESS: Cookies file found at {os.path.abspath(cookie_path)}")
-        opts["cookiefile"] = cookie_path
+
+    if os.path.exists("cookies.txt"):
+        opts["cookiefile"] = "cookies.txt"
+        print("[DEBUG] cookies.txt পাওয়া গেছে, ব্যবহার হচ্ছে")
     else:
-        print("❌ WARNING: cookies.txt file NOT FOUND in the directory! YouTube might block the bot.")
-        
+        print("[DEBUG] cookies.txt নেই")
+
     return opts
 
 
@@ -92,14 +94,19 @@ def get_available_qualities(url):
         try:
             info = ydl.extract_info(url, download=False)
         except Exception as e:
-            # 🚨 আসল এরর প্রিন্ট করার জন্য লগিং যোগ করা হলো
-            print(f"\n🚨 [ERROR] yt-dlp extract_info failed: {str(e)}\n")
+            # ✅ FIX: এরর আর নিঃশব্দে গেলা হবে না, Railway Deploy Logs এ পুরো এরর প্রিন্ট হবে
+            print(f"[DEBUG] extract_info FAILED: {repr(e)}")
             return [], {}, "Video"
-            
+
     if not info:
+        print("[DEBUG] extract_info returned empty info")
         return [], {}, "Video"
-        
+
     formats = info.get("formats", [])
+    print(f"[DEBUG] Total formats returned: {len(formats)}")
+    sample = [(f.get("format_id"), f.get("height"), f.get("vcodec"), f.get("format_note")) for f in formats]
+    print(f"[DEBUG] Formats sample: {sample}")
+
     quality_map = {}
     for f in formats:
         h = f.get("height")
@@ -109,6 +116,7 @@ def get_available_qualities(url):
         if h not in quality_map or (size and size > (quality_map[h] or 0)):
             quality_map[h] = size
     heights = sorted(quality_map.keys(), reverse=True)
+    print(f"[DEBUG] Heights with video found: {heights}")
     return heights, quality_map, info.get("title", "Video")
 
 
@@ -392,7 +400,7 @@ async def handle_link(message):
     if not heights:
         await checking_msg.edit_text(
             "❌ **ইউটিউব আপনার বটকে ব্লক করেছে বা ভিডিওটি প্রটেক্টেড!**\n\n"
-            "ভিডিওর কোনো কোয়ালিটি বা ফরম্যাট পাওয়া যায়নি।\n\n"
+            "ভিডিওর কোনো কোয়ালিটি বা ফরম্যাট পাওয়া যায়নি।\n\n"
             "💡 **সমাধান:** একটি নতুন/ফ্রেশ `cookies.txt` ফাইল বটের ফোল্ডারে আপলোড করে রিস্টার্ট দিন।"
         )
         return
@@ -609,7 +617,7 @@ async def process_video(client, message, session):
         err = str(e)
         if "Requested format is not available" in err:
             await message.reply_text(
-                "❌ Format Error!\nভিডিওটার format পাওয়া যাচ্ছে না। এটি সম্ভবত প্রিমিয়াম বা হাইলি-প্রটেক্টেড ভিডিও।\n"
+                "❌ Format Error!\nভিডিওটার format পাওয়া যাচ্ছে না। এটি সম্ভবত প্রিমিয়াম বা হাইলি-প্রটেক্টেড ভিডিও।\n"
                 "কিছুক্ষণ পরে আবার চেষ্টা করো অথবা অন্য লিংক দাও।"
             )
         elif "Video unavailable" in err:
