@@ -1,4 +1,10 @@
-import os, math, logging, re, subprocess, shutil, asyncio, time
+import os, sys, math, logging, re, subprocess, shutil, asyncio, time
+
+# ✅ FIX: Railway/Docker এ stdout বাফার হয়ে থাকে, ফলে print() করা ডিবাগ লগ সাথে সাথে
+# দেখা যাচ্ছিল না। এখানে line-buffering ফোর্স করা হলো যাতে প্রতিটা print সাথে সাথে
+# Deploy Logs এ চলে আসে।
+sys.stdout.reconfigure(line_buffering=True)
+
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 import yt_dlp
@@ -71,7 +77,8 @@ def _base_ydl_opts():
         "retries": 15,
         "fragment_retries": 15,
         "socket_timeout": 30,
-        "ignore_no_formats_error": True,
+        # ✅ FIX: ignore_no_formats_error সরানো হলো — এটা আসল error লুকিয়ে ফেলছিল।
+        # এখন yt-dlp ব্যর্থ হলে exception raise হবে এবং আমরা except ব্লকে পুরো error দেখতে পাবো।
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         }
@@ -81,7 +88,8 @@ def _base_ydl_opts():
 
     if os.path.exists("cookies.txt"):
         opts["cookiefile"] = "cookies.txt"
-        print("[DEBUG] cookies.txt পাওয়া গেছে, ব্যবহার হচ্ছে")
+        age_min = (time.time() - os.path.getmtime("cookies.txt")) / 60
+        print(f"[DEBUG] cookies.txt পাওয়া গেছে, বয়স: {age_min:.1f} মিনিট")
     else:
         print("[DEBUG] cookies.txt নেই")
 
@@ -99,8 +107,11 @@ def get_available_qualities(url):
             return [], {}, "Video"
 
     if not info:
-        print("[DEBUG] extract_info returned empty info")
+        print("[DEBUG] extract_info returned empty info (None)")
         return [], {}, "Video"
+
+    print(f"[DEBUG] info keys: {list(info.keys())[:20]}")
+    print(f"[DEBUG] info._type: {info.get('_type')}, availability: {info.get('availability')}")
 
     formats = info.get("formats", [])
     print(f"[DEBUG] Total formats returned: {len(formats)}")
