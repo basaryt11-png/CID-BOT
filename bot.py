@@ -71,18 +71,34 @@ def _detect_js_runtime():
     return None
 
 
+class _YDLLogger:
+    """✅ NEW: quiet/no_warnings আসল কারণ (nsig solve failed ইত্যাদি) লুকিয়ে ফেলছিল।
+    এই লগার দিয়ে yt-dlp এর সব internal warning/error Railway লগে দেখা যাবে।"""
+    def debug(self, msg):
+        if msg.startswith('[debug] '):
+            return  # খুব বেশি ভার্বোজ, স্কিপ করা হলো
+        print(f"[YTDLP] {msg}")
+
+    def info(self, msg):
+        print(f"[YTDLP] {msg}")
+
+    def warning(self, msg):
+        print(f"[YTDLP-WARNING] {msg}")
+
+    def error(self, msg):
+        print(f"[YTDLP-ERROR] {msg}")
+
+
 def _base_ydl_opts():
     js_runtimes = _detect_js_runtime()
     print(f"[DEBUG] JS runtime detected: {js_runtimes}")
     opts = {
         "quiet": True,
-        "no_warnings": True,
+        "no_warnings": False,   # ✅ FIX: warning লুকানো বন্ধ
+        "logger": _YDLLogger(), # ✅ FIX: সব warning/error এখন প্রিন্ট হবে
         "geo_bypass": True,
         "geo_bypass_country": "US",
         "nocheckcertificate": True,
-        # ✅ FIX: player_client override সরানো হলো — yt-dlp-ejs (pip প্যাকেজ, Node ছাড়াই
-        # nsig সলভ করে) ইনস্টল করা আছে, তাই yt-dlp কে নিজের ডিফল্ট/সবচেয়ে আপডেটেড
-        # client combination বেছে নিতে দেওয়া হচ্ছে, বদলে পুরনো hardcoded লিস্ট না দিয়ে।
         "retries": 15,
         "fragment_retries": 15,
         "socket_timeout": 30,
