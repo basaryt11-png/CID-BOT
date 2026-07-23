@@ -34,6 +34,20 @@ PART_DURATION_SEC = 600
 logging.basicConfig(level=logging.ERROR)
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+# ✅ NEW: cookies আর GitHub রিপোতে ফাইল হিসেবে রাখা হচ্ছে না (এটা সিকিউরিটি রিস্ক ছিল)।
+# এখন Railway এর YOUTUBE_COOKIES এনভায়রনমেন্ট ভ্যারিয়েবল থেকে কনটেন্ট পড়ে
+# রানটাইমে একটা লোকাল cookies.txt বানানো হচ্ছে (এটা .gitignore এ রাখা, git এ কমিট হয় না)।
+COOKIES_PATH = "cookies.txt"
+_cookies_env = os.environ.get("YOUTUBE_COOKIES", "")
+if _cookies_env.strip():
+    with open(COOKIES_PATH, "w", encoding="utf-8") as _f:
+        _f.write(_cookies_env)
+    print("[DEBUG] YOUTUBE_COOKIES env var থেকে cookies.txt তৈরি হয়েছে")
+elif os.path.exists(COOKIES_PATH):
+    print("[DEBUG] YOUTUBE_COOKIES env var নেই, কিন্তু লোকাল cookies.txt পাওয়া গেছে (পুরনো ফাইল?)")
+else:
+    print("[DEBUG] কোনো cookies পাওয়া যায়নি — cookies ছাড়াই চেষ্টা করা হবে")
+
 SESSIONS = {}
 
 app = Client(
@@ -86,9 +100,9 @@ def _base_ydl_opts():
     if js_runtimes:
         opts["js_runtimes"] = js_runtimes
 
-    if os.path.exists("cookies.txt"):
-        opts["cookiefile"] = "cookies.txt"
-        age_min = (time.time() - os.path.getmtime("cookies.txt")) / 60
+    if os.path.exists(COOKIES_PATH):
+        opts["cookiefile"] = COOKIES_PATH
+        age_min = (time.time() - os.path.getmtime(COOKIES_PATH)) / 60
         print(f"[DEBUG] cookies.txt পাওয়া গেছে, বয়স: {age_min:.1f} মিনিট")
     else:
         print("[DEBUG] cookies.txt নেই")
