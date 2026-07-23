@@ -67,7 +67,8 @@ def _detect_js_runtime():
     for name in ("deno", "node", "bun"):
         path = shutil.which(name)
         if path:
-            return {name: path}
+            # ✅ FIX: yt-dlp আশা করে {runtime: {config-dict}}, শুধু পাথ স্ট্রিং না
+            return {name: {"path": path}}
     return None
 
 
