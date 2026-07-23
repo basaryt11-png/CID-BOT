@@ -103,10 +103,9 @@ def _base_ydl_opts():
         "retries": 15,
         "fragment_retries": 15,
         "socket_timeout": 30,
-        # ✅ FIX: এটা আবার যোগ করা হলো — এটা আসলে বৈধ অপশন (CLI --remote-components এর
-        # সমতুল্য), যেটা YouTube এর n-challenge সলভার স্ক্রিপ্ট ডাউনলোড/আপডেট করে।
-        # Node.js এখন সঠিকভাবে ডিটেক্ট হচ্ছে বলে এখন এটা কাজ করার কথা।
-        "remote_components": "ejs:github",
+        # ✅ FIX: এটা অবশ্যই একটা LIST হতে হবে, স্ট্রিং না — স্ট্রিং দিলে yt-dlp সেটাকে
+        # অক্ষর-বাই-অক্ষর আলাদা কম্পোনেন্ট হিসেবে ধরে নেয় (এটাই আসল বাগ ছিল)
+        "remote_components": ["ejs:github"],
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         }
