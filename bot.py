@@ -100,6 +100,13 @@ def _base_ydl_opts():
         "geo_bypass": True,
         "geo_bypass_country": "US",
         "nocheckcertificate": True,
+        # ✅ FIX: yt-dlp wiki অনুযায়ী mweb ক্লায়েন্ট + PO Token provider plugin — এটাই
+        # বর্তমানে সবচেয়ে স্টেবল কম্বিনেশন হিসেবে ডকুমেন্টেড। tv/web ফলব্যাক হিসেবে রাখা হলো।
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["mweb", "tv", "web"]
+            }
+        },
         "retries": 15,
         "fragment_retries": 15,
         "socket_timeout": 30,
