@@ -100,11 +100,12 @@ def _base_ydl_opts():
         "geo_bypass": True,
         "geo_bypass_country": "US",
         "nocheckcertificate": True,
-        # ✅ FIX: android_vr ক্লায়েন্ট PO Token ছাড়াই কাজ করে (yt-dlp এর নিজস্ব ডিফল্ট
-        # ক্লায়েন্টগুলার একটা) — mweb/tv এর বদলে এটা প্রাধান্য দেওয়া হলো, বেশি স্টেবল।
+        # ✅ FIX: android_vr ক্লায়েন্ট cookies-এর সাথে কাজ করে না (yt-dlp নিজেই স্কিপ করে
+        # দেয়)। cookies ছাড়াই android_vr ব্যবহার করাটাই বেশি স্টেবল — এটাই PO Token এবং
+        # bot-verification দুটোই এড়িয়ে যায়। android/tv_downgraded ফলব্যাক হিসেবে রাখা হলো।
         "extractor_args": {
             "youtube": {
-                "player_client": ["android_vr", "web", "tv"]
+                "player_client": ["android_vr", "android", "tv_downgraded"]
             }
         },
         "retries": 15,
@@ -120,10 +121,12 @@ def _base_ydl_opts():
     if js_runtimes:
         opts["js_runtimes"] = js_runtimes
 
+    # ✅ FIX: cookiefile ইচ্ছাকৃতভাবে yt-dlp তে পাস করা হচ্ছে না — cookies থাকলে yt-dlp
+    # android_vr ক্লায়েন্ট বাদ দিয়ে দেয় (যেটা PO Token ছাড়াই কাজ করে)। cookies.txt ফাইল
+    # ডিস্কে থেকে যাচ্ছে (ভবিষ্যতে দরকার হলে), কিন্তু এই মুহূর্তে ব্যবহার হচ্ছে না।
     if os.path.exists(COOKIES_PATH):
-        opts["cookiefile"] = COOKIES_PATH
         age_min = (time.time() - os.path.getmtime(COOKIES_PATH)) / 60
-        print(f"[DEBUG] cookies.txt পাওয়া গেছে, বয়স: {age_min:.1f} মিনিট")
+        print(f"[DEBUG] cookies.txt আছে (বয়স: {age_min:.1f} মিনিট) কিন্তু android_vr এর জন্য ব্যবহার হচ্ছে না")
     else:
         print("[DEBUG] cookies.txt নেই")
 
