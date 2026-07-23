@@ -1,0 +1,6 @@
+cookies.txt
+downloads/
+*.session
+*.session-journal
+__pycache__/
+*.pyc
