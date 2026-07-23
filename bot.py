@@ -80,19 +80,12 @@ def _base_ydl_opts():
         "geo_bypass": True,
         "geo_bypass_country": "US",
         "nocheckcertificate": True,
-        "extractor_args": {
-            "youtube": {
-                # ✅ FIX: android আবার যোগ করা হলো (ios একাই প্রায়ই "sign in required" দেয়)
-                "player_client": ["android", "tv", "web", "mweb"]
-            }
-        },
-        # ✅ FIX: remote EJS solver আবার চালু, nsig (n-challenge) সমাধানের জন্য দরকার
-        "remote_components": "ejs:github",
+        # ✅ FIX: player_client override সরানো হলো — yt-dlp-ejs (pip প্যাকেজ, Node ছাড়াই
+        # nsig সলভ করে) ইনস্টল করা আছে, তাই yt-dlp কে নিজের ডিফল্ট/সবচেয়ে আপডেটেড
+        # client combination বেছে নিতে দেওয়া হচ্ছে, বদলে পুরনো hardcoded লিস্ট না দিয়ে।
         "retries": 15,
         "fragment_retries": 15,
         "socket_timeout": 30,
-        # ✅ FIX: ignore_no_formats_error সরানো হলো — এটা আসল error লুকিয়ে ফেলছিল।
-        # এখন yt-dlp ব্যর্থ হলে exception raise হবে এবং আমরা except ব্লকে পুরো error দেখতে পাবো।
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         }
