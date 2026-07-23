@@ -100,11 +100,11 @@ def _base_ydl_opts():
         "geo_bypass": True,
         "geo_bypass_country": "US",
         "nocheckcertificate": True,
-        # ✅ FIX: yt-dlp wiki অনুযায়ী mweb ক্লায়েন্ট + PO Token provider plugin — এটাই
-        # বর্তমানে সবচেয়ে স্টেবল কম্বিনেশন হিসেবে ডকুমেন্টেড। tv/web ফলব্যাক হিসেবে রাখা হলো।
+        # ✅ FIX: android_vr ক্লায়েন্ট PO Token ছাড়াই কাজ করে (yt-dlp এর নিজস্ব ডিফল্ট
+        # ক্লায়েন্টগুলার একটা) — mweb/tv এর বদলে এটা প্রাধান্য দেওয়া হলো, বেশি স্টেবল।
         "extractor_args": {
             "youtube": {
-                "player_client": ["mweb", "tv", "web"]
+                "player_client": ["android_vr", "web", "tv"]
             }
         },
         "retries": 15,
